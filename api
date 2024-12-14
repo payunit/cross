@@ -1,0 +1,167 @@
+**CrossPay API Integration Guide**
+
+This document provides a comprehensive overview of how to integrate with the CrossPay API, detailing the required setup, data exchange, and security measures to ensure proper functionality and security for payment systems.
+
+---
+
+### **Setup and Configuration**
+
+1. **API Credentials**:
+   - `CROSSPAY_API_DATA`: Unique identifier for your API usage.
+   - `CROSSPAY_API_KEY`: API key for authentication.
+   - `CROSSPAY_API_BASE_URL`: Base URL for CrossPay API requests.
+   - `RETURN_URL`: The URL where CrossPay will redirect users after payment processing.
+
+   Example configuration (from `config.php`):
+   ```php
+   define('CROSSPAY_API_DATA', 'your_api_data');
+   define('CROSSPAY_API_KEY', 'your_api_key');
+   define('CROSSPAY_API_BASE_URL', 'https://crosspayonline.com');
+   define('RETURN_URL', 'https://yourdomain.com/success.php');
+   ```
+
+2. **Generate Invoice Number**:
+   Use a random, secure generator for unique invoice IDs:
+   ```php
+   function generateInvoiceNumber() {
+       $prefix = 'PAY-';
+       $randomNumber = substr(str_shuffle('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'), 0, 8);
+       return $prefix . $randomNumber;
+   }
+   ```
+
+---
+
+### **Payment Request**
+
+To initiate a payment, send a request to CrossPay with the following steps:
+
+1. **Collect User Input**:
+   - Fields: `name`, `email`, `phone`, `currency`, and `amount`.
+
+   Example (from `process_payment.php`):
+   ```php
+   $name = filter_input(INPUT_POST, 'name', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+   $email = filter_input(INPUT_POST, 'email', FILTER_VALIDATE_EMAIL);
+   $phone = filter_input(INPUT_POST, 'phone', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+   $currency = filter_input(INPUT_POST, 'currency', FILTER_SANITIZE_FULL_SPECIAL_CHARS);
+   $amount = filter_input(INPUT_POST, 'amount', FILTER_VALIDATE_FLOAT);
+   ```
+
+2. **Prepare Invoice Details**:
+   Format the `inv_details` JSON object according to CrossPay requirements:
+   ```php
+   $inv_details = [
+       "inv_items" => [
+           [
+               "name" => $invoice_id, // Invoice ID
+               "quantity" => "1.00",
+               "unitPrice" => number_format($amount, 2, '.', ''),
+               "totalPrice" => number_format($amount, 2, '.', ''),
+               "currency" => $currency
+           ]
+       ],
+       "inv_info" => [
+           ["row_title" => "Vat", "row_value" => "0"],
+           ["row_title" => "Delivery", "row_value" => "0"]
+       ],
+       "user" => ["userName" => $name]
+   ];
+   ```
+
+3. **Generate Verification Token**:
+   Use HMAC-SHA256 with a secret key to secure the transaction:
+   ```php
+   $verification_token = hash_hmac('sha256', $invoice_id . $amount . $currency, SECRET_KEY);
+   ```
+
+4. **Construct Payment URL**:
+   Append all parameters and redirect the user to CrossPay:
+   ```php
+   $payment_url = CROSSPAY_API_BASE_URL . "/api/createInvoiceByAccountLahza?" . http_build_query([
+       'api_data' => CROSSPAY_API_DATA,
+       'invoice_id' => $invoice_id,
+       'apiKey' => CROSSPAY_API_KEY,
+       'total' => number_format($amount, 2, '.', ''),
+       'currency' => $currency,
+       'inv_details' => json_encode($inv_details),
+       'return_url' => RETURN_URL,
+       'email' => $email,
+       'mobile' => $phone,
+       'name' => $name,
+       'verification_token' => $verification_token
+   ]);
+
+   header('Location: ' . $payment_url);
+   exit;
+   ```
+
+---
+
+### **Payment Callback Handling**
+
+When the payment is completed, CrossPay redirects the user to the `RETURN_URL`. Ensure to validate the callback data to prevent tampering.
+
+1. **Callback Parameters**:
+   - `invoice_id`: Invoice identifier.
+   - `is_paid`: Payment status (1 for success).
+   - `amount`, `currency`: Payment details.
+   - `hash`: Security hash for validation.
+   - `crosspay_invoice_id`: CrossPay's internal invoice ID.
+
+2. **Validate Hash**:
+   Compare the received hash with a locally generated one:
+   ```php
+   $expected_hash = hash_hmac('sha256', $invoice_id, CROSSPAY_API_KEY);
+   if ($hash !== $expected_hash) {
+       die('Invalid callback: hash mismatch');
+   }
+   ```
+
+3. **Verify Payment Details**:
+   Match `amount` and `currency` with stored records:
+   ```php
+   if (floatval($invoiceData['amount']) !== floatval($amount_received) || $invoiceData['currency'] !== $currency_received) {
+       die('Data mismatch: invoice details do not match stored records.');
+   }
+   ```
+
+4. **Update Database**:
+   Mark the payment as completed:
+   ```php
+   $updateStmt = $db->prepare("UPDATE invoices SET status = 'paid', paid_at = NOW(), crosspay_invoice_id = :cpi WHERE invoice_id = :id");
+   $updateStmt->execute(['id' => $invoice_id, 'cpi' => $crosspay_invoice_id]);
+   ```
+
+---
+
+### **Security Considerations**
+
+1. **Protect API Keys**:
+   - Store credentials in a secure environment.
+   - Avoid exposing keys in public repositories.
+
+2. **Use HTTPS**:
+   Ensure all API requests and callback URLs use HTTPS.
+
+3. **Verify Data**:
+   - Validate all received data before processing.
+   - Use secure hash comparisons to prevent tampering.
+
+4. **Log Transactions**:
+   Maintain a log of all transactions for debugging and auditing.
+   ```php
+   $logData = [
+       'date' => date('Y-m-d H:i:s'),
+       'invoice_id' => $invoice_id,
+       'amount' => $amount,
+       'currency' => $currency,
+       'status' => $is_paid
+   ];
+   file_put_contents('transactions.log', json_encode($logData) . PHP_EOL, FILE_APPEND);
+   ```
+
+---
+
+This document provides the required steps and code snippets to integrate and securely use the CrossPay API in your system. Ensure all interactions follow the recommended security practices to protect against potential vulnerabilities.
+
